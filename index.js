@@ -82,6 +82,9 @@ const parseVietnameseTime = (message) => {
   let baseDate = new Date(); // Thời gian hiện tại (UTC)
   let time = null;
 
+  // Chuyển baseDate sang múi giờ Việt Nam để tính ngày
+  baseDate = toVietnamTime(baseDate);
+
   // Xác định ngày/tháng/năm
   const dateMatch = message.match(/ngày\s+(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?/i);
   if (dateMatch) {
@@ -89,19 +92,18 @@ const parseVietnameseTime = (message) => {
     const month = parseInt(dateMatch[2], 10) - 1; // Tháng trong JavaScript bắt đầu từ 0
     const year = dateMatch[3] ? parseInt(dateMatch[3], 10) : baseDate.getFullYear();
     baseDate = new Date(Date.UTC(year, month, day));
-  } else if (message.includes('ngày mai')) {
-    baseDate = toVietnamTime(baseDate); // Chuyển sang múi giờ Việt Nam để tính ngày
-    baseDate.setDate(baseDate.getDate() + 1);
+  } else if (message.includes('ngày mai') || message.includes('mai')) {
+    baseDate.setDate(baseDate.getDate() + 1); // Ngày mai
     baseDate = new Date(Date.UTC(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate()));
   } else if (message.includes('hôm nay')) {
-    baseDate = toVietnamTime(baseDate); // Chuyển sang múi giờ Việt Nam
     baseDate = new Date(Date.UTC(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate()));
   }
 
   // Xác định giờ
   const timeMatch = message.match(/(\d{1,2})h\s*(sáng|chiều)?/i);
+  let hour = 9; // Giờ mặc định là 9h sáng nếu không chỉ định
   if (timeMatch) {
-    let hour = parseInt(timeMatch[1], 10);
+    hour = parseInt(timeMatch[1], 10);
     const period = timeMatch[2] ? timeMatch[2].toLowerCase() : '';
 
     // Điều chỉnh giờ theo buổi (sáng/chiều)
@@ -110,12 +112,12 @@ const parseVietnameseTime = (message) => {
     } else if (period === 'sáng' && hour === 12) {
       hour = 0; // 12h sáng -> 0h
     }
-
-    // Tạo một bản sao của baseDate và đặt giờ theo múi giờ Việt Nam
-    const vietnamDate = toVietnamTime(baseDate);
-    vietnamDate.setHours(hour, 0, 0, 0); // Đặt giờ theo múi giờ Việt Nam
-    time = toUTCTime(vietnamDate); // Chuyển về UTC để lưu vào MongoDB
   }
+
+  // Tạo một bản sao của baseDate và đặt giờ theo múi giờ Việt Nam
+  const vietnamDate = toVietnamTime(baseDate);
+  vietnamDate.setHours(hour, 0, 0, 0); // Đặt giờ theo múi giờ Việt Nam
+  time = toUTCTime(vietnamDate); // Chuyển về UTC để lưu vào MongoDB
 
   return time;
 };
@@ -201,7 +203,7 @@ const sendMessage = async (recipientId, text) => {
 cron.schedule('*/10 * * * *', async () => {
   try {
     // Thay URL bằng URL thực tế của bot trên Render
-    const response = await axios.get('https://chat-bot-uh7j.onrender.com');
+    const response = await axios.get('https://your-bot-service.onrender.com/ping');
     console.log('Tự ping thành công:', response.data);
   } catch (error) {
     console.error('Lỗi tự ping:', error.message);
