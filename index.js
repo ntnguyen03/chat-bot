@@ -1,63 +1,224 @@
+// Import các thư viện cần thiết
+require('dotenv').config();
 const express = require('express');
-const bodyParser = require('body-parser');
 const axios = require('axios');
+const mongoose = require('mongoose');
+const cron = require('node-cron');
+const chrono = require('chrono-node');
 
+// Khởi tạo ứng dụng Express
 const app = express();
-const PORT = process.env.PORT || 5000;
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "nam123455A";
-const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN || "EAAJqARd2GIMBO61AGNPNsRTHJkMBjdoZCqpy5EbtLdGhsC96rFkhXTxfZB9sQRud3VRqF1s65P4X23X1cZB116MVRGeGYJdYD107PUwCZCtkNZAddNMHIOA1DyG1672o9n0j7ffMvxHw85x5sPBWLLAv7uCKeJXoeTcGFJhGlAMH5xj4KxOiLq0ENfg1UhJysLHwZBQEyZC3SKkkL0p7QZDZD";
+app.use(express.json());
 
-app.use(bodyParser.json());
+// Lấy các biến môi trường từ file .env
+const { PAGE_ACCESS_TOKEN, VERIFY_TOKEN, MONGO_URI, PORT } = process.env;
 
-// Xác minh Webhook với Facebook
+// Kết nối MongoDB
+mongoose.connect(MONGO_URI)
+  .then(() => console.log('Kết nối MongoDB thành công'))
+  .catch(err => console.error('Lỗi kết nối MongoDB:', err));
+
+// Định nghĩa schema cho sự kiện
+const EventSchema = new mongoose.Schema({
+  senderId: String,
+  content: String,
+  time: Date,
+  repeat: String, // 'daily', 'weekly', hoặc false
+  participants: [String],
+  status: { type: String, default: 'pending' }
+});
+
+const Event = mongoose.model('Event', EventSchema);
+
+// Route mặc định
+app.get('/', (req, res) => {
+  res.send('Server đang chạy!');
+});
+
+// Xác thực Webhook từ Facebook
 app.get('/webhook', (req, res) => {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-
-    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-        console.log("✅ Webhook verified!");
-        res.status(200).send(challenge);
-    } else {
-        res.sendStatus(403);
-    }
+  console.log('Nhận yêu cầu GET từ Facebook:', req.query);
+  if (req.query['hub.verify_token'] === VERIFY_TOKEN) {
+    res.send(req.query['hub.challenge']);
+  } else {
+    res.sendStatus(403);
+  }
 });
 
-// Xử lý tin nhắn từ người dùng
-app.post('/webhook', (req, res) => {
-    const data = req.body;
+// Hàm định dạng thời gian theo dạng "ngày/tháng/năm giờ:phút"
+const formatDateTime = (date) => {
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0'); // Tháng bắt đầu từ 0
+  const year = date.getFullYear();
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${day}/${month}/${year} ${hours}:${minutes}`;
+};
 
-    if (data.object === 'page') {
-        data.entry.forEach(entry => {
-            entry.messaging.forEach(event => {
-                if (event.message) {
-                    handleMessage(event.sender.id, event.message.text);
-                }
-            });
-        });
-        res.sendStatus(200);
-    } else {
-        res.sendStatus(404);
+// Hàm phân tích thời gian tiếng Việt
+const parseVietnameseTime = (message) => {
+  let baseDate = new Date();
+  let time = null;
+
+  // Xác định ngày/tháng/năm
+  const dateMatch = message.match(/ngày\s+(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?/i);
+  if (dateMatch) {
+    const day = parseInt(dateMatch[1], 10);
+    const month = parseInt(dateMatch[2], 10) - 1; // Tháng trong JavaScript bắt đầu từ 0
+    const year = dateMatch[3] ? parseInt(dateMatch[3], 10) : baseDate.getFullYear();
+    baseDate = new Date(year, month, day);
+  } else if (message.includes('ngày mai')) {
+    baseDate.setDate(baseDate.getDate() + 1);
+  } else if (message.includes('hôm nay')) {
+    // Giữ nguyên ngày hiện tại
+  }
+
+  // Xác định giờ
+  const timeMatch = message.match(/(\d{1,2})h\s*(sáng|chiều)?/i);
+  if (timeMatch) {
+    let hour = parseInt(timeMatch[1], 10);
+    const period = timeMatch[2] ? timeMatch[2].toLowerCase() : '';
+
+    // Điều chỉnh giờ theo buổi (sáng/chiều)
+    if (period === 'chiều' && hour < 12) {
+      hour += 12; // Chuyển sang giờ chiều (ví dụ: 5h chiều -> 17h)
+    } else if (period === 'sáng' && hour === 12) {
+      hour = 0; // 12h sáng -> 0h
     }
+
+    // Đặt giờ, phút, giây
+    baseDate.setHours(hour, 0, 0, 0);
+    time = baseDate;
+  }
+
+  return time;
+};
+
+// Hàm phân tích tin nhắn
+const parseMessage = (message) => {
+  const event = { content: '', time: null, repeat: false, participants: [], new_time: null };
+
+  // Ưu tiên sử dụng logic thủ công cho tiếng Việt
+  event.time = parseVietnameseTime(message);
+
+  // Nếu logic thủ công không phân tích được, thử dùng chrono-node
+  if (!event.time) {
+    const parsedTime = chrono.parse(message);
+    if (parsedTime[0]) {
+      event.time = parsedTime[0].start.date();
+    }
+  }
+
+  // Trích xuất thời gian mới (cho lệnh "Đổi")
+  if (message.includes('thành')) {
+    const newTimeText = message.split('thành')[1].trim();
+    event.new_time = parseVietnameseTime(newTimeText);
+    if (!event.new_time) {
+      const newParsedTime = chrono.parse(newTimeText);
+      if (newParsedTime[0]) {
+        event.new_time = newParsedTime[0].start.date();
+      }
+    }
+  }
+
+  // Trích xuất nội dung (giả sử từ đầu tiên là nội dung)
+  const words = message.split(' ');
+  event.content = words[0];
+
+  // Kiểm tra lặp lại
+  if (message.includes('mỗi ngày')) event.repeat = 'daily';
+  if (message.includes('mỗi tuần')) event.repeat = 'weekly';
+
+  // Trích xuất người tham gia (nếu có "với"))
+  if (message.includes('với')) {
+    const participant = message.split('với')[1].trim().split(' ')[0];
+    event.participants.push(participant);
+  }
+
+  return event;
+};
+
+// Hàm gửi tin nhắn
+const sendMessage = async (recipientId, text) => {
+  try {
+    await axios.post('https://graph.facebook.com/v13.0/me/messages', {
+      recipient: { id: recipientId },
+      message: { text }
+    }, {
+      params: { access_token: PAGE_ACCESS_TOKEN }
+    });
+    console.log('Đã gửi tin nhắn:', text);
+  } catch (error) {
+    console.error('Lỗi gửi tin nhắn:', error.response ? error.response.data : error.message);
+  }
+};
+
+// Xử lý tin nhắn từ nhóm
+app.post('/webhook', async (req, res) => {
+  try {
+    const data = req.body.entry[0].messaging[0];
+    const senderId = data.sender.id;
+    const message = data.message.text;
+
+    if (message.includes('Hủy')) {
+      const event = parseMessage(message.replace('Hủy', '').trim());
+      await Event.deleteOne({ senderId, content: event.content, time: event.time });
+      await sendMessage(senderId, `Đã hủy: ${event.content}`);
+    } else if (message.includes('Đổi')) {
+      const parts = message.split('thành');
+      const oldEvent = parseMessage(parts[0].replace('Đổi', '').trim());
+      const newEvent = parseMessage(parts[1].trim());
+      await Event.updateOne(
+        { senderId, content: oldEvent.content, time: oldEvent.time },
+        { time: newEvent.new_time }
+      );
+      await sendMessage(senderId, `Đã đổi: ${oldEvent.content} thành ${formatDateTime(newEvent.new_time)}`);
+    } else {
+      const event = parseMessage(message);
+      if (!event.time) {
+        await sendMessage(senderId, 'Không thể xác định thời gian. Vui lòng thử lại với định dạng như: "Họp ngày 15/10 lúc 9h sáng".');
+        return res.sendStatus(200);
+      }
+      const newEvent = new Event({
+        senderId,
+        content: event.content,
+        time: event.time,
+        repeat: event.repeat,
+        participants: event.participants
+      });
+      await newEvent.save();
+      await sendMessage(senderId, `Đã lên lịch: ${formatDateTime(event.time)}: ${event.content}`);
+    }
+
+    res.sendStatus(200);
+  } catch (error) {
+    console.error('Lỗi xử lý tin nhắn:', error);
+    res.sendStatus(500);
+  }
 });
 
-function sendMessage(senderId, text) {
-    axios.post(`https://graph.facebook.com/v13.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-        recipient: { id: senderId },
-        message: { text: text }
-    })
-    .then(response => console.log("📩 Message sent!"))
-    .catch(error => console.error("❌ Error sending message:", error));
-}
+// Lập lịch gửi nhắc nhở
+cron.schedule('* * * * *', async () => {
+  try {
+    const now = new Date();
+    const events = await Event.find({ time: { $lte: now }, status: 'pending' });
 
-function handleMessage(senderId, message) {
-    if (message.toLowerCase().includes("hello")) {
-        sendMessage(senderId, "👋 Chào bạn! Tôi có thể giúp gì?");
-    } else {
-        sendMessage(senderId, "🤖 Tôi chưa hiểu yêu cầu của bạn!");
+    for (let event of events) {
+      await sendMessage(event.senderId, `🔔 Nhắc nhở: ${formatDateTime(event.time)}: ${event.content}`);
+      event.status = 'sent';
+      await event.save();
+
+      // Xử lý sự kiện lặp lại
+      if (event.repeat === 'daily') {
+        event.time = new Date(event.time.getTime() + 24 * 60 * 60 * 1000);
+        event.status = 'pending';
+        await event.save();
+      }
     }
-}
-
-app.listen(PORT, () => {
-    console.log(`🚀 Server chạy trên cổng ${PORT}`);
+  } catch (error) {
+    console.error('Lỗi khi gửi nhắc nhở:', error);
+  }
 });
+
+// Khởi động server
+app.listen(PORT, () => console.log(`Server chạy trên port ${PORT}`));
