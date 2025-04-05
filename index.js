@@ -57,7 +57,7 @@ const toVietnamTime = (date) => {
 const formatDateTime = (date) => {
   const vietnamDate = toVietnamTime(date);
   const day = String(vietnamDate.getUTCDate()).padStart(2, '0');
-  const month = String(vietnamDate.getUTCMonth() + 1).padStart(2, '0'); // Tháng bắt đầu từ 0
+  const month = String(vietnamDate.getUTCMonth() + 1).padStart(2, '0');
   const year = vietnamDate.getUTCFullYear();
   const hours = String(vietnamDate.getUTCHours()).padStart(2, '0');
   const minutes = String(vietnamDate.getUTCMinutes()).padStart(2, '0');
@@ -66,8 +66,7 @@ const formatDateTime = (date) => {
 
 // Hàm phân tích thời gian tiếng Việt
 const parseVietnameseTime = (message) => {
-  let baseDate = new Date();
-  baseDate = toVietnamTime(baseDate); // Chuyển baseDate sang múi giờ Việt Nam
+  let baseDate = new Date(); // Thời gian hiện tại (UTC)
   let time = null;
 
   // Xác định ngày/tháng/năm
@@ -75,12 +74,15 @@ const parseVietnameseTime = (message) => {
   if (dateMatch) {
     const day = parseInt(dateMatch[1], 10);
     const month = parseInt(dateMatch[2], 10) - 1; // Tháng trong JavaScript bắt đầu từ 0
-    const year = dateMatch[3] ? parseInt(dateMatch[3], 10) : baseDate.getUTCFullYear();
+    const year = dateMatch[3] ? parseInt(dateMatch[3], 10) : baseDate.getFullYear();
     baseDate = new Date(Date.UTC(year, month, day));
   } else if (message.includes('ngày mai')) {
-    baseDate.setUTCDate(baseDate.getUTCDate() + 1);
+    baseDate = toVietnamTime(baseDate); // Chuyển sang múi giờ Việt Nam để tính ngày
+    baseDate.setDate(baseDate.getDate() + 1);
+    baseDate = new Date(Date.UTC(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate()));
   } else if (message.includes('hôm nay')) {
-    // Giữ nguyên ngày hiện tại
+    baseDate = toVietnamTime(baseDate); // Chuyển sang múi giờ Việt Nam
+    baseDate = new Date(Date.UTC(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate()));
   }
 
   // Xác định giờ
@@ -91,14 +93,15 @@ const parseVietnameseTime = (message) => {
 
     // Điều chỉnh giờ theo buổi (sáng/chiều)
     if (period === 'chiều' && hour < 12) {
-      hour += 12; // Chuyển sang giờ chiều (ví dụ: 5h chiều -> 17h)
+      hour += 12; // Chuyển sang giờ chiều (ví dụ: 4h chiều -> 16h)
     } else if (period === 'sáng' && hour === 12) {
       hour = 0; // 12h sáng -> 0h
     }
 
-    // Đặt giờ, phút, giây (theo UTC để lưu vào MongoDB)
-    baseDate.setUTCHours(hour, 0, 0, 0);
-    time = baseDate;
+    // Chuyển giờ về UTC để lưu vào MongoDB
+    const vietnamDate = toVietnamTime(baseDate);
+    vietnamDate.setHours(hour, 0, 0, 0); // Đặt giờ theo múi giờ Việt Nam
+    time = new Date(vietnamDate.getTime() - 7 * 60 * 60 * 1000); // Chuyển về UTC để lưu
   }
 
   return time;
@@ -107,12 +110,12 @@ const parseVietnameseTime = (message) => {
 // Hàm trích xuất nội dung từ tin nhắn
 const extractContent = (message) => {
   let content = message
-    .replace(/ngày\s+\d{1,2}\/\d{1,2}(?:\/\d{4})?/i, '') // Loại bỏ "ngày X/Y" hoặc "ngày X/Y/Z"
-    .replace(/ngày mai|hôm nay|nay/i, '') // Loại bỏ "ngày mai", "hôm nay", "nay"
-    .replace(/lúc\s+\d{1,2}h\s*(sáng|chiều)?/i, '') // Loại bỏ "lúc Xh sáng/chiều"
-    .replace(/\d{1,2}h\s*(sáng|chiều)?/i, '') // Loại bỏ "Xh sáng/chiều"
-    .replace(/mỗi ngày|mỗi tuần/i, '') // Loại bỏ "mỗi ngày", "mỗi tuần"
-    .replace(/với\s+\w+/i, '') // Loại bỏ "với X"
+    .replace(/ngày\s+\d{1,2}\/\d{1,2}(?:\/\d{4})?/i, '')
+    .replace(/ngày mai|hôm nay|nay/i, '')
+    .replace(/lúc\s+\d{1,2}h\s*(sáng|chiều)?/i, '')
+    .replace(/\d{1,2}h\s*(sáng|chiều)?/i, '')
+    .replace(/mỗi ngày|mỗi tuần/i, '')
+    .replace(/với\s+\w+/i, '')
     .trim();
 
   if (!content) {
@@ -127,10 +130,8 @@ const extractContent = (message) => {
 const parseMessage = (message) => {
   const event = { content: '', time: null, repeat: false, participants: [], new_time: null };
 
-  // Ưu tiên sử dụng logic thủ công cho tiếng Việt
   event.time = parseVietnameseTime(message);
 
-  // Nếu logic thủ công không phân tích được, thử dùng chrono-node
   if (!event.time) {
     const parsedTime = chrono.parse(message);
     if (parsedTime[0]) {
@@ -138,7 +139,6 @@ const parseMessage = (message) => {
     }
   }
 
-  // Trích xuất thời gian mới (cho lệnh "Đổi")
   if (message.includes('thành')) {
     const newTimeText = message.split('thành')[1].trim();
     event.new_time = parseVietnameseTime(newTimeText);
@@ -150,14 +150,11 @@ const parseMessage = (message) => {
     }
   }
 
-  // Trích xuất nội dung
   event.content = extractContent(message);
 
-  // Kiểm tra lặp lại
   if (message.includes('mỗi ngày')) event.repeat = 'daily';
   if (message.includes('mỗi tuần')) event.repeat = 'weekly';
 
-  // Trích xuất người tham gia (nếu có "với"))
   if (message.includes('với')) {
     const participant = message.split('với')[1].trim().split(' ')[0];
     event.participants.push(participant);
@@ -190,17 +187,38 @@ app.post('/webhook', async (req, res) => {
 
     if (message.includes('Hủy')) {
       const event = parseMessage(message.replace('Hủy', '').trim());
-      await Event.deleteOne({ senderId, content: event.content, time: event.time });
-      await sendMessage(senderId, `Đã hủy: ${event.content}`);
+      const deletedEvent = await Event.findOneAndDelete({
+        senderId,
+        content: event.content,
+        time: event.time
+      });
+
+      if (deletedEvent) {
+        await sendMessage(senderId, `Đã hủy: ${event.content} vào ${formatDateTime(event.time)}`);
+      } else {
+        await sendMessage(senderId, `Không tìm thấy sự kiện: ${event.content} vào ${formatDateTime(event.time)} để hủy.`);
+      }
     } else if (message.includes('Đổi')) {
       const parts = message.split('thành');
       const oldEvent = parseMessage(parts[0].replace('Đổi', '').trim());
       const newEvent = parseMessage(parts[1].trim());
-      await Event.updateOne(
+
+      if (!newEvent.new_time) {
+        await sendMessage(senderId, 'Không thể xác định thời gian mới. Vui lòng thử lại với định dạng như: "lúc 10h sáng ngày mai".');
+        return res.sendStatus(200);
+      }
+
+      const updatedEvent = await Event.findOneAndUpdate(
         { senderId, content: oldEvent.content, time: oldEvent.time },
-        { time: newEvent.new_time }
+        { time: newEvent.new_time },
+        { new: true }
       );
-      await sendMessage(senderId, `Đã đổi: ${oldEvent.content} thành ${formatDateTime(newEvent.new_time)}`);
+
+      if (updatedEvent) {
+        await sendMessage(senderId, `Đã đổi: ${oldEvent.content} từ ${formatDateTime(oldEvent.time)} thành ${formatDateTime(newEvent.new_time)}`);
+      } else {
+        await sendMessage(senderId, `Không tìm thấy sự kiện: ${oldEvent.content} vào ${formatDateTime(oldEvent.time)} để thay đổi.`);
+      }
     } else {
       const event = parseMessage(message);
       if (!event.time) {
@@ -228,18 +246,17 @@ app.post('/webhook', async (req, res) => {
 // Lập lịch gửi nhắc nhở
 cron.schedule('* * * * *', async () => {
   try {
-    const now = toVietnamTime(new Date()); // Thời gian hiện tại ở múi giờ Việt Nam
-    const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000); // 1 giờ sau
-    const oneDayLater = new Date(now.getTime() + 24 * 60 * 60 * 1000); // 1 ngày sau
+    const now = toVietnamTime(new Date());
+    const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
+    const oneDayLater = new Date(now.getTime() + 24 * 60 * 60 * 1000);
     const tomorrow = new Date(now);
     tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(0, 0, 0, 0); // Đặt về 00:00 ngày mai
+    tomorrow.setHours(0, 0, 0, 0);
 
-    // Nhắc nhở trước 1 giờ cho các sự kiện trong ngày hiện tại hoặc ngày mai
     const eventsSoon = await Event.find({
       time: {
-        $gte: now, // Sự kiện trong tương lai
-        $lte: oneHourLater // Trong vòng 1 giờ tới
+        $gte: now,
+        $lte: oneHourLater
       },
       status: 'pending'
     });
@@ -256,11 +273,10 @@ cron.schedule('* * * * *', async () => {
       }
     }
 
-    // Nhắc nhở trước 1 ngày cho các sự kiện xa (sau ngày mai)
     const eventsFar = await Event.find({
       time: {
-        $gte: tomorrow, // Sự kiện sau ngày mai
-        $lte: oneDayLater // Trong vòng 1 ngày tới
+        $gte: tomorrow,
+        $lte: oneDayLater
       },
       status: 'pending'
     });
@@ -277,7 +293,6 @@ cron.schedule('* * * * *', async () => {
       }
     }
 
-    // Nhắc nhở đúng giờ
     const eventsNow = await Event.find({
       time: { $lte: now },
       status: 'pending'
