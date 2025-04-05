@@ -156,9 +156,9 @@ const parseMessage = (message) => {
     }
   }
 
-  // Trích xuất thời gian mới (cho lệnh "Đổi")
-  if (message.includes('thành')) {
-    const newTimeText = message.split('thành')[1].trim();
+  // Trích xuất thời gian mới (cho lệnh "đổi")
+  if (message.toLowerCase().includes('thành')) {
+    const newTimeText = message.split(/thành/i)[1].trim();
     event.new_time = parseVietnameseTime(newTimeText);
     if (!event.new_time) {
       const newParsedTime = chrono.parse(newTimeText);
@@ -216,9 +216,22 @@ app.post('/webhook', async (req, res) => {
     const data = req.body.entry[0].messaging[0];
     const senderId = data.sender.id;
     const message = data.message.text;
+    const messageLower = message.toLowerCase(); // Chuyển message về chữ thường để kiểm tra
 
-    if (message.includes('Hủy', 'hủy')) {
-      const event = parseMessage(message.replace('Hủy', '').trim());
+    // Kiểm tra xem đây có phải là tin nhắn đầu tiên của người dùng không
+    const existingEvents = await Event.find({ senderId });
+    if (existingEvents.length === 0) {
+      // Nếu không có sự kiện nào, đây là tin nhắn đầu tiên
+      const welcomeMessage = `Chào bạn! Tôi là bot nhắc nhở sự kiện. Dưới đây là các lệnh bạn có thể sử dụng:
+- Lên lịch: "Họp ngày 15/10 lúc 9h sáng"
+- Hủy sự kiện: "hủy họp ngày 15/10 lúc 9h sáng"
+- Đổi thời gian: "Đổi họp ngày 15/10 lúc 9h sáng thành 10h sáng"
+Hãy thử nhé!`;
+      await sendMessage(senderId, welcomeMessage);
+    }
+
+    if (messageLower.includes('hủy')) {
+      const event = parseMessage(message.replace(/hủy/i, '').trim());
       const deletedEvent = await Event.findOneAndDelete({
         senderId,
         content: event.content,
@@ -230,9 +243,9 @@ app.post('/webhook', async (req, res) => {
       } else {
         await sendMessage(senderId, `Không tìm thấy sự kiện: ${event.content} vào ${formatDateTime(event.time)} để hủy.`);
       }
-    } else if (message.includes('Đổi', 'đổi')) {
-      const parts = message.split('thành');
-      const oldEvent = parseMessage(parts[0].replace('Đổi', '').trim());
+    } else if (messageLower.includes('đổi')) {
+      const parts = message.split(/thành/i);
+      const oldEvent = parseMessage(parts[0].replace(/đổi/i, '').trim());
       const newEvent = parseMessage(parts[1].trim());
 
       if (!newEvent.new_time) {
