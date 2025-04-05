@@ -45,19 +45,29 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-// Hàm định dạng thời gian theo dạng "ngày/tháng/năm giờ:phút"
+// Hàm chuyển đổi thời gian sang múi giờ Việt Nam (GMT+7)
+const toVietnamTime = (date) => {
+  const vietnamOffset = 7 * 60; // GMT+7 (7 giờ = 7 * 60 phút)
+  const utcDate = new Date(date);
+  const vietnamTime = new Date(utcDate.getTime() + vietnamOffset * 60 * 1000);
+  return vietnamTime;
+};
+
+// Hàm định dạng thời gian theo dạng "ngày/tháng/năm giờ:phút" ở múi giờ Việt Nam
 const formatDateTime = (date) => {
-  const day = String(date.getDate()).padStart(2, '0');
-  const month = String(date.getMonth() + 1).padStart(2, '0'); // Tháng bắt đầu từ 0
-  const year = date.getFullYear();
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const vietnamDate = toVietnamTime(date);
+  const day = String(vietnamDate.getUTCDate()).padStart(2, '0');
+  const month = String(vietnamDate.getUTCMonth() + 1).padStart(2, '0'); // Tháng bắt đầu từ 0
+  const year = vietnamDate.getUTCFullYear();
+  const hours = String(vietnamDate.getUTCHours()).padStart(2, '0');
+  const minutes = String(vietnamDate.getUTCMinutes()).padStart(2, '0');
   return `${day}/${month}/${year} ${hours}:${minutes}`;
 };
 
 // Hàm phân tích thời gian tiếng Việt
 const parseVietnameseTime = (message) => {
   let baseDate = new Date();
+  baseDate = toVietnamTime(baseDate); // Chuyển baseDate sang múi giờ Việt Nam
   let time = null;
 
   // Xác định ngày/tháng/năm
@@ -65,10 +75,10 @@ const parseVietnameseTime = (message) => {
   if (dateMatch) {
     const day = parseInt(dateMatch[1], 10);
     const month = parseInt(dateMatch[2], 10) - 1; // Tháng trong JavaScript bắt đầu từ 0
-    const year = dateMatch[3] ? parseInt(dateMatch[3], 10) : baseDate.getFullYear();
-    baseDate = new Date(year, month, day);
+    const year = dateMatch[3] ? parseInt(dateMatch[3], 10) : baseDate.getUTCFullYear();
+    baseDate = new Date(Date.UTC(year, month, day));
   } else if (message.includes('ngày mai')) {
-    baseDate.setDate(baseDate.getDate() + 1);
+    baseDate.setUTCDate(baseDate.getUTCDate() + 1);
   } else if (message.includes('hôm nay')) {
     // Giữ nguyên ngày hiện tại
   }
@@ -86,8 +96,8 @@ const parseVietnameseTime = (message) => {
       hour = 0; // 12h sáng -> 0h
     }
 
-    // Đặt giờ, phút, giây
-    baseDate.setHours(hour, 0, 0, 0);
+    // Đặt giờ, phút, giây (theo UTC để lưu vào MongoDB)
+    baseDate.setUTCHours(hour, 0, 0, 0);
     time = baseDate;
   }
 
@@ -96,17 +106,15 @@ const parseVietnameseTime = (message) => {
 
 // Hàm trích xuất nội dung từ tin nhắn
 const extractContent = (message) => {
-  // Loại bỏ các cụm từ liên quan đến thời gian
   let content = message
     .replace(/ngày\s+\d{1,2}\/\d{1,2}(?:\/\d{4})?/i, '') // Loại bỏ "ngày X/Y" hoặc "ngày X/Y/Z"
-    .replace(/ngày mai|hôm nay/i, '') // Loại bỏ "ngày mai", "hôm nay"
+    .replace(/ngày mai|hôm nay|nay/i, '') // Loại bỏ "ngày mai", "hôm nay", "nay"
     .replace(/lúc\s+\d{1,2}h\s*(sáng|chiều)?/i, '') // Loại bỏ "lúc Xh sáng/chiều"
     .replace(/\d{1,2}h\s*(sáng|chiều)?/i, '') // Loại bỏ "Xh sáng/chiều"
     .replace(/mỗi ngày|mỗi tuần/i, '') // Loại bỏ "mỗi ngày", "mỗi tuần"
     .replace(/với\s+\w+/i, '') // Loại bỏ "với X"
     .trim();
 
-  // Nếu không còn nội dung, mặc định là từ đầu tiên
   if (!content) {
     const words = message.split(' ');
     content = words[0];
@@ -220,15 +228,66 @@ app.post('/webhook', async (req, res) => {
 // Lập lịch gửi nhắc nhở
 cron.schedule('* * * * *', async () => {
   try {
-    const now = new Date();
-    const events = await Event.find({ time: { $lte: now }, status: 'pending' });
+    const now = toVietnamTime(new Date()); // Thời gian hiện tại ở múi giờ Việt Nam
+    const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000); // 1 giờ sau
+    const oneDayLater = new Date(now.getTime() + 24 * 60 * 60 * 1000); // 1 ngày sau
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(0, 0, 0, 0); // Đặt về 00:00 ngày mai
 
-    for (let event of events) {
-      await sendMessage(event.senderId, `🔔 Nhắc nhở: ${formatDateTime(event.time)}: ${event.content}`);
+    // Nhắc nhở trước 1 giờ cho các sự kiện trong ngày hiện tại hoặc ngày mai
+    const eventsSoon = await Event.find({
+      time: {
+        $gte: now, // Sự kiện trong tương lai
+        $lte: oneHourLater // Trong vòng 1 giờ tới
+      },
+      status: 'pending'
+    });
+
+    for (let event of eventsSoon) {
+      await sendMessage(event.senderId, `🔔 Nhắc nhở trước 1 giờ: ${formatDateTime(event.time)}: ${event.content}`);
       event.status = 'sent';
       await event.save();
 
-      // Xử lý sự kiện lặp lại
+      if (event.repeat === 'daily') {
+        event.time = new Date(event.time.getTime() + 24 * 60 * 60 * 1000);
+        event.status = 'pending';
+        await event.save();
+      }
+    }
+
+    // Nhắc nhở trước 1 ngày cho các sự kiện xa (sau ngày mai)
+    const eventsFar = await Event.find({
+      time: {
+        $gte: tomorrow, // Sự kiện sau ngày mai
+        $lte: oneDayLater // Trong vòng 1 ngày tới
+      },
+      status: 'pending'
+    });
+
+    for (let event of eventsFar) {
+      await sendMessage(event.senderId, `🔔 Nhắc nhở trước 1 ngày: ${formatDateTime(event.time)}: ${event.content}`);
+      event.status = 'sent';
+      await event.save();
+
+      if (event.repeat === 'daily') {
+        event.time = new Date(event.time.getTime() + 24 * 60 * 60 * 1000);
+        event.status = 'pending';
+        await event.save();
+      }
+    }
+
+    // Nhắc nhở đúng giờ
+    const eventsNow = await Event.find({
+      time: { $lte: now },
+      status: 'pending'
+    });
+
+    for (let event of eventsNow) {
+      await sendMessage(event.senderId, `🔔 Đã đến giờ: ${formatDateTime(event.time)}: ${event.content}`);
+      event.status = 'sent';
+      await event.save();
+
       if (event.repeat === 'daily') {
         event.time = new Date(event.time.getTime() + 24 * 60 * 60 * 1000);
         event.status = 'pending';
