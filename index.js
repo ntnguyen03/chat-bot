@@ -217,7 +217,7 @@ app.post('/webhook', async (req, res) => {
     const senderId = data.sender.id;
     const message = data.message.text;
 
-    if (message.includes('Hủy')) {
+    if (message.includes('Hủy', 'hủy')) {
       const event = parseMessage(message.replace('Hủy', '').trim());
       const deletedEvent = await Event.findOneAndDelete({
         senderId,
@@ -230,7 +230,7 @@ app.post('/webhook', async (req, res) => {
       } else {
         await sendMessage(senderId, `Không tìm thấy sự kiện: ${event.content} vào ${formatDateTime(event.time)} để hủy.`);
       }
-    } else if (message.includes('Đổi')) {
+    } else if (message.includes('Đổi', 'đổi')) {
       const parts = message.split('thành');
       const oldEvent = parseMessage(parts[0].replace('Đổi', '').trim());
       const newEvent = parseMessage(parts[1].trim());
