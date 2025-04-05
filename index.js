@@ -35,6 +35,11 @@ app.get('/', (req, res) => {
   res.send('Server đang chạy!');
 });
 
+// Route để ping
+app.get('/ping', (req, res) => {
+  res.status(200).send('Bot is awake!');
+});
+
 // Xác thực Webhook từ Facebook
 app.get('/webhook', (req, res) => {
   console.log('Nhận yêu cầu GET từ Facebook:', req.query);
@@ -168,7 +173,7 @@ const parseMessage = (message) => {
   if (message.includes('mỗi ngày')) event.repeat = 'daily';
   if (message.includes('mỗi tuần')) event.repeat = 'weekly';
 
-  // Trích xuất người tham gia (nếu có "với"))
+  // Trích xuất người tham gia (nếu có "với")
   if (message.includes('với')) {
     const participant = message.split('với')[1].trim().split(' ')[0];
     event.participants.push(participant);
@@ -191,6 +196,17 @@ const sendMessage = async (recipientId, text) => {
     console.error('Lỗi gửi tin nhắn:', error.response ? error.response.data : error.message);
   }
 };
+
+// Tự ping để giữ bot hoạt động
+cron.schedule('*/10 * * * *', async () => {
+  try {
+    // Thay URL bằng URL thực tế của bot trên Render
+    const response = await axios.get('https://chat-bot-uh7j.onrender.com');
+    console.log('Tự ping thành công:', response.data);
+  } catch (error) {
+    console.error('Lỗi tự ping:', error.message);
+  }
+});
 
 // Xử lý tin nhắn từ nhóm
 app.post('/webhook', async (req, res) => {
