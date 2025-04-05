@@ -94,6 +94,27 @@ const parseVietnameseTime = (message) => {
   return time;
 };
 
+// Hàm trích xuất nội dung từ tin nhắn
+const extractContent = (message) => {
+  // Loại bỏ các cụm từ liên quan đến thời gian
+  let content = message
+    .replace(/ngày\s+\d{1,2}\/\d{1,2}(?:\/\d{4})?/i, '') // Loại bỏ "ngày X/Y" hoặc "ngày X/Y/Z"
+    .replace(/ngày mai|hôm nay/i, '') // Loại bỏ "ngày mai", "hôm nay"
+    .replace(/lúc\s+\d{1,2}h\s*(sáng|chiều)?/i, '') // Loại bỏ "lúc Xh sáng/chiều"
+    .replace(/\d{1,2}h\s*(sáng|chiều)?/i, '') // Loại bỏ "Xh sáng/chiều"
+    .replace(/mỗi ngày|mỗi tuần/i, '') // Loại bỏ "mỗi ngày", "mỗi tuần"
+    .replace(/với\s+\w+/i, '') // Loại bỏ "với X"
+    .trim();
+
+  // Nếu không còn nội dung, mặc định là từ đầu tiên
+  if (!content) {
+    const words = message.split(' ');
+    content = words[0];
+  }
+
+  return content;
+};
+
 // Hàm phân tích tin nhắn
 const parseMessage = (message) => {
   const event = { content: '', time: null, repeat: false, participants: [], new_time: null };
@@ -121,9 +142,8 @@ const parseMessage = (message) => {
     }
   }
 
-  // Trích xuất nội dung (giả sử từ đầu tiên là nội dung)
-  const words = message.split(' ');
-  event.content = words[0];
+  // Trích xuất nội dung
+  event.content = extractContent(message);
 
   // Kiểm tra lặp lại
   if (message.includes('mỗi ngày')) event.repeat = 'daily';
